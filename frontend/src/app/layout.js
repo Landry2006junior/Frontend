@@ -12,8 +12,9 @@ const fraunces = Fraunces({
 });
 
 export const metadata = {
-  title: "Arc Inventory",
-  description: "JWT-protected inventory dashboard for stock operations",
+  title: "Arc Inventory Command Center",
+  description:
+    "Role-aware inventory command center with traceability, movement capture, alerts, and analytics.",
 };
 
 export default function RootLayout({ children }) {

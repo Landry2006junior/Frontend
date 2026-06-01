@@ -1,285 +1,461 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import Panel from "../ui/Panel";
 import StatusMessage from "../ui/StatusMessage";
-import { apiRequest, withAuth } from "../../lib/api";
+import { useInventoryWorkspace } from "./useInventoryWorkspace";
+import {
+  buildMovementFeed,
+  currencyFormatter,
+  dateTimeFormatter,
+  findMaterialByCode,
+  getMaterialState,
+  getMaterialStateMeta,
+  numberFormatter,
+} from "../../lib/inventory";
 
-const inFormInitial = { materialId: "", supplierId: "", stockInQuantity: "" };
-const outFormInitial = { materialId: "", supplierId: "", stockOutQuantity: "" };
+const EMPTY_FORM = {
+  direction: "in",
+  captureMode: "manual",
+  scannerInput: "",
+  materialId: "",
+  supplierId: "",
+  quantity: "",
+  referenceCode: "",
+  notes: "",
+};
 
-export default function StockMovementsPanel({
-  token,
-  materials,
-  suppliers,
-  onUnauthorized,
-  onChange,
-}) {
-  const [stockIns, setStockIns] = useState([]);
-  const [stockOuts, setStockOuts] = useState([]);
-  const [stockInForm, setStockInForm] = useState(inFormInitial);
-  const [stockOutForm, setStockOutForm] = useState(outFormInitial);
-  const [busy, setBusy] = useState(false);
+export default function StockMovementsPanel() {
+  const {
+    materials,
+    suppliers,
+    permissions,
+    stockIns,
+    stockOuts,
+    loading,
+    recordMovement,
+  } = useInventoryWorkspace();
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState({ type: "", message: "" });
 
-  const setError = (message) => setStatus({ type: "error", message });
-  const setSuccess = (message) => setStatus({ type: "success", message });
+  const recentMovements = buildMovementFeed(stockIns, stockOuts).slice(0, 10);
+  const matchedMaterial =
+    form.captureMode === "manual"
+      ? null
+      : findMaterialByCode(materials, form.scannerInput);
+  const selectedMaterial =
+    materials.find((material) => material._id === form.materialId) ||
+    matchedMaterial ||
+    null;
+  const selectedSupplier =
+    suppliers.find((supplier) => supplier._id === form.supplierId) || null;
+  const requestedQuantity = Number(form.quantity || 0);
+  const isOutbound = form.direction === "out";
+  const quantityWarning =
+    isOutbound &&
+    selectedMaterial &&
+    requestedQuantity > Number(selectedMaterial.Quantity || 0)
+      ? "Requested stock-out exceeds the quantity currently on hand."
+      : "";
 
-  const fetchMovements = useCallback(async () => {
-    try {
-      const [inData, outData] = await Promise.all([
-        apiRequest("/stockIn", withAuth(token, { method: "GET" })),
-        apiRequest("/stockOut", withAuth(token, { method: "GET" })),
-      ]);
-      setStockIns(inData);
-      setStockOuts(outData);
-    } catch (error) {
-      if (error.status === 401) {
-        onUnauthorized?.();
-        return;
+  const updateForm = (field) => (event) => {
+    const nextValue = event.target.value;
+
+    setForm((current) => {
+      if (field === "scannerInput") {
+        const nextMatch =
+          current.captureMode === "manual"
+            ? null
+            : findMaterialByCode(materials, nextValue);
+
+        return {
+          ...current,
+          scannerInput: nextValue,
+          materialId: nextMatch?._id || current.materialId,
+        };
       }
-      setError(error.message);
-    }
-  }, [onUnauthorized, token]);
 
-  useEffect(() => {
-    if (!token) return;
-    queueMicrotask(() => {
-      void fetchMovements();
+      return { ...current, [field]: nextValue };
     });
-  }, [fetchMovements, token]);
-
-  const submitStockIn = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setStatus({ type: "", message: "" });
-    try {
-      const data = await apiRequest(
-        "/stockIn",
-        withAuth(token, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            materialId: stockInForm.materialId,
-            supplierId: stockInForm.supplierId,
-            stockInQuantity: Number(stockInForm.stockInQuantity),
-          }),
-        }),
-      );
-      const created = data.stockIn || data;
-      setStockIns((prev) => [created, ...prev]);
-      setStockInForm(inFormInitial);
-      setSuccess("Stock-in recorded.");
-      onChange?.();
-    } catch (error) {
-      if (error.status === 401) {
-        onUnauthorized?.();
-        return;
-      }
-      setError(error.message);
-    } finally {
-      setBusy(false);
-    }
   };
 
-  const submitStockOut = async (event) => {
+  const submitMovement = async (event) => {
     event.preventDefault();
-    setBusy(true);
+    setSubmitting(true);
     setStatus({ type: "", message: "" });
+
     try {
-      const data = await apiRequest(
-        "/stockOut",
-        withAuth(token, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            materialId: stockOutForm.materialId,
-            supplierId: stockOutForm.supplierId,
-            stockOutQuantity: Number(stockOutForm.stockOutQuantity),
-          }),
-        }),
-      );
-      const created = data.stockOut || data;
-      setStockOuts((prev) => [created, ...prev]);
-      setStockOutForm(outFormInitial);
-      setSuccess("Stock-out recorded.");
-      onChange?.();
-    } catch (error) {
-      if (error.status === 401) {
-        onUnauthorized?.();
-        return;
+      const payload = {
+        materialId: form.materialId,
+        supplierId: form.supplierId,
+        captureMode: form.captureMode,
+        referenceCode: form.referenceCode.trim() || form.scannerInput.trim(),
+        notes: form.notes.trim(),
+      };
+
+      if (form.direction === "in") {
+        payload.stockInQuantity = Number(form.quantity);
+      } else {
+        payload.stockOutQuantity = Number(form.quantity);
       }
-      setError(error.message);
+
+      await recordMovement(form.direction, payload);
+      setStatus({
+        type: "success",
+        message:
+          form.direction === "in"
+            ? "Inbound stock recorded and quantity refreshed."
+            : "Outbound stock recorded and inventory balance updated.",
+      });
+      setForm((current) => ({
+        ...EMPTY_FORM,
+        direction: current.direction,
+      }));
+    } catch (requestError) {
+      setStatus({ type: "error", message: requestError.message });
     } finally {
-      setBusy(false);
+      setSubmitting(false);
     }
   };
 
   return (
-    <Panel
-      title="Stock Movements"
-      subtitle="Track incoming and outgoing quantities"
-      right={
-        <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-[#b8c4e0]">
-          In {stockIns.length} | Out {stockOuts.length}
-        </span>
-      }
+    <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
+      <Panel
+        title="Efficient Data Entry"
+        subtitle="Use a single console for inbound and outbound transactions with manual, barcode, or RFID capture."
+        right={
+          <div className="flex flex-wrap gap-2">
+            <DirectionToggle
+              active={form.direction === "in"}
+              onClick={() =>
+                setForm((current) => ({ ...current, direction: "in" }))
+              }
+            >
+              Stock in
+            </DirectionToggle>
+            <DirectionToggle
+              active={form.direction === "out"}
+              outbound
+              onClick={() =>
+                setForm((current) => ({ ...current, direction: "out" }))
+              }
+            >
+              Stock out
+            </DirectionToggle>
+          </div>
+        }
+      >
+        <form className="space-y-4" onSubmit={submitMovement}>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Capture mode" as="select" value={form.captureMode} onChange={updateForm("captureMode")}>
+              <option value="manual">Manual entry</option>
+              <option value="barcode">Barcode</option>
+              <option value="rfid">RFID</option>
+            </Field>
+            <Field
+              label={
+                form.captureMode === "manual"
+                  ? "Reference code"
+                  : "Scan or paste code"
+              }
+              value={
+                form.captureMode === "manual"
+                  ? form.referenceCode
+                  : form.scannerInput
+              }
+              onChange={
+                form.captureMode === "manual"
+                  ? updateForm("referenceCode")
+                  : updateForm("scannerInput")
+              }
+              placeholder={
+                form.captureMode === "manual"
+                  ? "PO-2026-004"
+                  : "Barcode, RFID, or SKU"
+              }
+            />
+            <Field
+              label="Material"
+              as="select"
+              value={form.materialId}
+              onChange={updateForm("materialId")}
+            >
+              <option value="">Select material</option>
+              {materials.map((material) => (
+                <option key={material._id} value={material._id}>
+                  {material.MaterialName}
+                </option>
+              ))}
+            </Field>
+            <Field
+              label="Supplier"
+              as="select"
+              value={form.supplierId}
+              onChange={updateForm("supplierId")}
+            >
+              <option value="">Select supplier</option>
+              {suppliers.map((supplier) => (
+                <option key={supplier._id} value={supplier._id}>
+                  {supplier.SupplierName}
+                </option>
+              ))}
+            </Field>
+            <Field
+              label="Quantity"
+              type="number"
+              min="1"
+              value={form.quantity}
+              onChange={updateForm("quantity")}
+              placeholder="0"
+            />
+            <Field
+              label="Reference override"
+              value={form.referenceCode}
+              onChange={updateForm("referenceCode")}
+              placeholder="Optional transaction reference"
+            />
+          </div>
+
+          <label className="grid gap-2 text-sm font-medium text-slate-700">
+            Notes
+            <textarea
+              rows={4}
+              value={form.notes}
+              onChange={updateForm("notes")}
+              className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+              placeholder="Receiving notes, issue reason, or verification comments"
+            />
+          </label>
+
+          {matchedMaterial ? (
+            <StatusMessage
+              status={{
+                type: "success",
+                message: `Scan match found: ${matchedMaterial.MaterialName}. The material selection has been aligned automatically.`,
+              }}
+            />
+          ) : null}
+
+          {quantityWarning ? (
+            <StatusMessage status={{ type: "warning", message: quantityWarning }} />
+          ) : null}
+
+          <StatusMessage status={status} />
+
+          <button
+            type="submit"
+            disabled={
+              submitting ||
+              !permissions.canRecordMovements ||
+              Boolean(quantityWarning)
+            }
+            className={`rounded-2xl px-4 py-3 text-sm font-semibold text-white disabled:opacity-60 ${
+              isOutbound ? "bg-rose-600" : "bg-slate-900"
+            }`}
+          >
+            {submitting
+              ? "Recording transaction..."
+              : isOutbound
+                ? "Record stock out"
+                : "Record stock in"}
+          </button>
+        </form>
+      </Panel>
+
+      <div className="space-y-5">
+        <Panel
+          title="Active Product Context"
+          subtitle="Validate stock balance, value, and traceability before confirming the transaction."
+        >
+          {selectedMaterial ? (
+            <SelectedMaterialCard
+              material={selectedMaterial}
+              supplier={selectedSupplier}
+            />
+          ) : (
+            <EmptyState
+              title="No product selected"
+              description="Pick a material manually or use scan mode to bind the transaction to a traceable item."
+            />
+          )}
+        </Panel>
+
+        <Panel
+          title="Visual Feedback"
+          subtitle="Recent transactions with movement direction, operator context, and capture mode."
+          right={
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              {numberFormatter.format(recentMovements.length)} recent
+            </span>
+          }
+        >
+          <div className="space-y-3">
+            {loading && recentMovements.length === 0 ? (
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                Loading transaction history...
+              </div>
+            ) : recentMovements.length === 0 ? (
+              <EmptyState
+                title="No movement history yet"
+                description="Transactions will appear here once the team starts receiving or issuing inventory."
+              />
+            ) : (
+              recentMovements.map((movement) => (
+                <MovementRow key={`${movement.type}-${movement.id}`} movement={movement} />
+              ))
+            )}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function DirectionToggle({ active, children, outbound, ...props }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      className={`rounded-2xl px-4 py-2 text-sm font-medium transition ${
+        active
+          ? outbound
+            ? "bg-rose-600 text-white"
+            : "bg-slate-900 text-white"
+          : "border border-slate-200 text-slate-700"
+      }`}
     >
-      <div className="grid gap-4 lg:grid-cols-2">
-        <form
-          className="grid gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3"
-          onSubmit={submitStockIn}
-        >
-          <h3 className="text-sm font-semibold text-emerald-200">Stock In</h3>
-          <select
-            className="rounded-lg border border-white/15 bg-black/30 px-3 py-2 text-sm text-white"
-            value={stockInForm.materialId}
-            onChange={(e) =>
-              setStockInForm((prev) => ({ ...prev, materialId: e.target.value }))
-            }
-            required
-          >
-            <option value="">Select material</option>
-            {materials.map((material) => (
-              <option key={material._id} value={material._id}>
-                {material.MaterialName}
-              </option>
-            ))}
-          </select>
-          <select
-            className="rounded-lg border border-white/15 bg-black/30 px-3 py-2 text-sm text-white"
-            value={stockInForm.supplierId}
-            onChange={(e) =>
-              setStockInForm((prev) => ({ ...prev, supplierId: e.target.value }))
-            }
-            required
-          >
-            <option value="">Select supplier</option>
-            {suppliers.map((supplier) => (
-              <option key={supplier._id} value={supplier._id}>
-                {supplier.SupplierName}
-              </option>
-            ))}
-          </select>
-          <input
-            type="number"
-            min="1"
-            className="rounded-lg border border-white/15 bg-black/30 px-3 py-2 text-sm text-white"
-            placeholder="Quantity"
-            value={stockInForm.stockInQuantity}
-            onChange={(e) =>
-              setStockInForm((prev) => ({
-                ...prev,
-                stockInQuantity: e.target.value,
-              }))
-            }
-            required
-          />
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-lg bg-emerald-300 px-3 py-2 text-sm font-semibold text-black disabled:opacity-60"
-          >
-            Record Stock In
-          </button>
-        </form>
+      {children}
+    </button>
+  );
+}
 
-        <form
-          className="grid gap-2 rounded-xl border border-rose-500/30 bg-rose-500/5 p-3"
-          onSubmit={submitStockOut}
+function Field({ as = "input", children, label, ...props }) {
+  const Component = as;
+
+  return (
+    <label className="grid gap-2 text-sm font-medium text-slate-700">
+      {label}
+      <Component
+        {...props}
+        className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+      >
+        {children}
+      </Component>
+    </label>
+  );
+}
+
+function SelectedMaterialCard({ material, supplier }) {
+  const stateMeta = getMaterialStateMeta(getMaterialState(material));
+
+  return (
+    <div className="rounded-[28px] border border-slate-200 bg-slate-50/90 px-4 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.24em] text-slate-400">
+            Selected material
+          </p>
+          <h3 className="mt-2 text-xl font-semibold text-slate-900">
+            {material.MaterialName}
+          </h3>
+          <p className="mt-2 text-sm text-slate-500">
+            {material.location || "Main Warehouse"} · {material.category || "General"}
+          </p>
+        </div>
+        <span
+          className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${stateMeta.className}`}
         >
-          <h3 className="text-sm font-semibold text-rose-200">Stock Out</h3>
-          <select
-            className="rounded-lg border border-white/15 bg-black/30 px-3 py-2 text-sm text-white"
-            value={stockOutForm.materialId}
-            onChange={(e) =>
-              setStockOutForm((prev) => ({ ...prev, materialId: e.target.value }))
-            }
-            required
-          >
-            <option value="">Select material</option>
-            {materials.map((material) => (
-              <option key={material._id} value={material._id}>
-                {material.MaterialName}
-              </option>
-            ))}
-          </select>
-          <select
-            className="rounded-lg border border-white/15 bg-black/30 px-3 py-2 text-sm text-white"
-            value={stockOutForm.supplierId}
-            onChange={(e) =>
-              setStockOutForm((prev) => ({ ...prev, supplierId: e.target.value }))
-            }
-            required
-          >
-            <option value="">Select supplier</option>
-            {suppliers.map((supplier) => (
-              <option key={supplier._id} value={supplier._id}>
-                {supplier.SupplierName}
-              </option>
-            ))}
-          </select>
-          <input
-            type="number"
-            min="1"
-            className="rounded-lg border border-white/15 bg-black/30 px-3 py-2 text-sm text-white"
-            placeholder="Quantity"
-            value={stockOutForm.stockOutQuantity}
-            onChange={(e) =>
-              setStockOutForm((prev) => ({
-                ...prev,
-                stockOutQuantity: e.target.value,
-              }))
-            }
-            required
-          />
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-lg bg-rose-300 px-3 py-2 text-sm font-semibold text-black disabled:opacity-60"
-          >
-            Record Stock Out
-          </button>
-        </form>
+          {stateMeta.label}
+        </span>
       </div>
 
-      <StatusMessage status={status} />
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <StatPill
+          label="On hand"
+          value={`${numberFormatter.format(material.Quantity || 0)} ${material.Unit}`}
+        />
+        <StatPill
+          label="Inventory value"
+          value={currencyFormatter.format(
+            material.inventoryValue ||
+              Number(material.Quantity || 0) * Number(material.UnitPrice || 0),
+          )}
+        />
+        <StatPill label="Barcode" value={material.barcode || "Not assigned"} />
+        <StatPill label="RFID" value={material.rfidTag || "Not assigned"} />
+      </div>
 
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-          <h4 className="mb-2 text-sm font-semibold text-emerald-200">
-            Recent Stock In
-          </h4>
-          <div className="space-y-2">
-            {stockIns.slice(0, 6).map((row) => (
-              <div
-                key={row._id}
-                className="rounded-lg border border-white/10 px-3 py-2 text-xs text-[#c8d3ef]"
-              >
-                {row.materialId?.MaterialName || row.materialId} |{" "}
-                {row.stockInQuantity}
-              </div>
-            ))}
+      {supplier ? (
+        <p className="mt-4 text-sm text-slate-600">
+          Transaction supplier: <span className="font-semibold">{supplier.SupplierName}</span>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function MovementRow({ movement }) {
+  const inbound = movement.type === "IN";
+
+  return (
+    <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${
+                inbound
+                  ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+                  : "bg-rose-50 text-rose-700 ring-1 ring-rose-100"
+              }`}
+            >
+              {movement.type}
+            </span>
+            <p className="font-semibold text-slate-900">{movement.material}</p>
           </div>
+          <p className="mt-2 text-sm text-slate-500">
+            {movement.supplier} · {movement.actor}
+          </p>
         </div>
-
-        <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-          <h4 className="mb-2 text-sm font-semibold text-rose-200">
-            Recent Stock Out
-          </h4>
-          <div className="space-y-2">
-            {stockOuts.slice(0, 6).map((row) => (
-              <div
-                key={row._id}
-                className="rounded-lg border border-white/10 px-3 py-2 text-xs text-[#c8d3ef]"
-              >
-                {row.materialId?.MaterialName || row.materialId} |{" "}
-                {row.stockOutQuantity}
-              </div>
-            ))}
-          </div>
+        <div className="text-right">
+          <p className="text-lg font-semibold text-slate-900">
+            {numberFormatter.format(movement.quantity)}
+          </p>
+          <p className="text-sm text-slate-500">
+            {dateTimeFormatter.format(new Date(movement.date))}
+          </p>
         </div>
       </div>
-    </Panel>
+
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+        <span className="rounded-full border border-slate-200 bg-white px-3 py-1">
+          {movement.captureMode}
+        </span>
+        {movement.referenceCode ? (
+          <span className="rounded-full border border-slate-200 bg-white px-3 py-1">
+            {movement.referenceCode}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function StatPill({ label, value }) {
+  return (
+    <div className="rounded-[20px] border border-slate-200 bg-white px-3 py-3">
+      <p className="text-xs uppercase tracking-[0.18em] text-slate-400">{label}</p>
+      <p className="mt-2 text-sm font-semibold text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+function EmptyState({ title, description }) {
+  return (
+    <div className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+      <p className="font-semibold text-slate-700">{title}</p>
+      <p className="mt-2 leading-6">{description}</p>
+    </div>
   );
 }

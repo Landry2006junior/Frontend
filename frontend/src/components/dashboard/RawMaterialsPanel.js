@@ -1,296 +1,629 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useDeferredValue, useState } from "react";
 import Panel from "../ui/Panel";
 import StatusMessage from "../ui/StatusMessage";
-import { apiRequest, withAuth } from "../../lib/api";
+import { useInventoryWorkspace } from "./useInventoryWorkspace";
+import {
+  buildClientAlerts,
+  currencyFormatter,
+  getMaterialState,
+  getMaterialStateMeta,
+  normalizeMaterialPayload,
+  numberFormatter,
+} from "../../lib/inventory";
 
-const emptyCreate = {
+const EMPTY_FORM = {
   MaterialName: "",
-  Quantity: "",
-  Unit: "",
-  UnitPrice: "",
+  sku: "",
+  category: "General",
+  location: "Main Warehouse",
+  Quantity: "0",
+  Unit: "units",
+  UnitPrice: "0",
+  reorderPoint: "10",
+  safetyStock: "5",
+  barcode: "",
+  rfidTag: "",
+  preferredSupplierId: "",
+  status: "active",
+  description: "",
+  lastAuditDate: "",
 };
 
-export default function RawMaterialsPanel({ token, onUnauthorized, onChange }) {
-  const [materials, setMaterials] = useState([]);
-  const [createForm, setCreateForm] = useState(emptyCreate);
-  const [updateForm, setUpdateForm] = useState({
-    id: "",
-    MaterialName: "",
-    Quantity: "",
-    Unit: "",
-    UnitPrice: "",
-  });
-  const [busy, setBusy] = useState(false);
+export default function RawMaterialsPanel() {
+  const {
+    materials,
+    suppliers,
+    permissions,
+    loading,
+    saveMaterial,
+  } = useInventoryWorkspace();
+  const [searchValue, setSearchValue] = useState("");
+  const deferredSearch = useDeferredValue(searchValue);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [locationFilter, setLocationFilter] = useState("all");
+  const [stateFilter, setStateFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("name");
+  const [editingId, setEditingId] = useState("");
+  const [activeMaterialId, setActiveMaterialId] = useState("");
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState({ type: "", message: "" });
 
-  const setError = (message) => setStatus({ type: "error", message });
-  const setSuccess = (message) => setStatus({ type: "success", message });
+  const categories = Array.from(
+    new Set(materials.map((material) => material.category || "General")),
+  ).sort((left, right) => left.localeCompare(right));
 
-  const materialsById = useMemo(() => {
-    const map = new Map();
-    materials.forEach((material) => map.set(material._id, material));
-    return map;
-  }, [materials]);
+  const locations = Array.from(
+    new Set(materials.map((material) => material.location || "Main Warehouse")),
+  ).sort((left, right) => left.localeCompare(right));
 
-  const fetchMaterials = useCallback(async () => {
-    try {
-      const data = await apiRequest(
-        "/rawMaterial",
-        withAuth(token, { method: "GET" }),
-      );
-      setMaterials(data);
-    } catch (error) {
-      if (error.status === 401) {
-        onUnauthorized?.();
-        return;
+  const filteredMaterials = [...materials]
+    .filter((material) => {
+      const state = getMaterialState(material);
+      const matchesSearch = deferredSearch
+        ? [
+            material.MaterialName,
+            material.sku,
+            material.barcode,
+            material.rfidTag,
+            material.category,
+            material.location,
+          ]
+            .filter(Boolean)
+            .some((entry) =>
+              entry.toLowerCase().includes(deferredSearch.toLowerCase()),
+            )
+        : true;
+      const matchesCategory =
+        categoryFilter === "all" ||
+        (material.category || "General") === categoryFilter;
+      const matchesLocation =
+        locationFilter === "all" ||
+        (material.location || "Main Warehouse") === locationFilter;
+      const matchesState = stateFilter === "all" || state === stateFilter;
+
+      return matchesSearch && matchesCategory && matchesLocation && matchesState;
+    })
+    .sort((left, right) => {
+      if (sortBy === "value") {
+        return (
+          Number(right.inventoryValue || right.Quantity * right.UnitPrice) -
+          Number(left.inventoryValue || left.Quantity * left.UnitPrice)
+        );
       }
-      setError(error.message);
-    }
-  }, [onUnauthorized, token]);
 
-  useEffect(() => {
-    if (!token) return;
-    queueMicrotask(() => {
-      void fetchMaterials();
+      if (sortBy === "quantity") {
+        return Number(right.Quantity || 0) - Number(left.Quantity || 0);
+      }
+
+      if (sortBy === "updated") {
+        return new Date(right.updatedAt || 0) - new Date(left.updatedAt || 0);
+      }
+
+      return left.MaterialName.localeCompare(right.MaterialName);
     });
-  }, [fetchMaterials, token]);
 
-  const createMaterial = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setStatus({ type: "", message: "" });
-    try {
-      const data = await apiRequest(
-        "/rawMaterial",
-        withAuth(token, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            MaterialName: createForm.MaterialName.trim(),
-            Quantity: Number(createForm.Quantity),
-            Unit: createForm.Unit.trim(),
-            UnitPrice: Number(createForm.UnitPrice),
-          }),
-        }),
-      );
-      const material = data.rawMaterial || data;
-      setMaterials((prev) => [material, ...prev]);
-      setCreateForm(emptyCreate);
-      setSuccess("Raw material created.");
-      onChange?.();
-    } catch (error) {
-      if (error.status === 401) {
-        onUnauthorized?.();
-        return;
-      }
-      setError(error.message);
-    } finally {
-      setBusy(false);
-    }
+  const activeMaterial =
+    materials.find((material) => material._id === activeMaterialId) ||
+    filteredMaterials[0] ||
+    materials[0] ||
+    null;
+  const alerts = buildClientAlerts(materials);
+
+  const updateForm = (field) => (event) => {
+    setForm((current) => ({ ...current, [field]: event.target.value }));
   };
 
-  const populateUpdate = (id) => {
-    const selected = materialsById.get(id);
-    if (!selected) return;
-      setUpdateForm({
-        id: selected._id,
-        MaterialName: selected.MaterialName || "",
-        Quantity: selected.Quantity?.toString() || "",
-        Unit: selected.Unit || "",
-        UnitPrice: selected.UnitPrice?.toString() || "",
+  const resetForm = () => {
+    setForm(EMPTY_FORM);
+    setEditingId("");
+  };
+
+  const startEdit = (material) => {
+    setEditingId(material._id);
+    setActiveMaterialId(material._id);
+    setForm({
+      MaterialName: material.MaterialName || "",
+      sku: material.sku || "",
+      category: material.category || "General",
+      location: material.location || "Main Warehouse",
+      Quantity: String(material.Quantity ?? 0),
+      Unit: material.Unit || "units",
+      UnitPrice: String(material.UnitPrice ?? 0),
+      reorderPoint: String(material.reorderPoint ?? 10),
+      safetyStock: String(material.safetyStock ?? 5),
+      barcode: material.barcode || "",
+      rfidTag: material.rfidTag || "",
+      preferredSupplierId:
+        material.preferredSupplierId?._id || material.preferredSupplierId || "",
+      status: material.status || "active",
+      description: material.description || "",
+      lastAuditDate: material.lastAuditDate
+        ? material.lastAuditDate.slice(0, 10)
+        : "",
+    });
+  };
+
+  const submitMaterial = async (event) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setStatus({ type: "", message: "" });
+
+    try {
+      await saveMaterial(normalizeMaterialPayload(form), editingId);
+      setStatus({
+        type: "success",
+        message: editingId
+          ? "Material profile updated successfully."
+          : "Material created successfully.",
       });
-  };
-
-  const updateMaterial = async (event) => {
-    event.preventDefault();
-    if (!updateForm.id) {
-      setError("Pick a material first.");
-      return;
-    }
-    setBusy(true);
-    setStatus({ type: "", message: "" });
-    try {
-      const data = await apiRequest(
-        `/rawMaterial/${updateForm.id}`,
-        withAuth(token, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            MaterialName: updateForm.MaterialName.trim(),
-            Quantity: Number(updateForm.Quantity),
-            Unit: updateForm.Unit.trim(),
-            UnitPrice: Number(updateForm.UnitPrice),
-          }),
-        }),
-      );
-      const updated = data.rawMaterial || data;
-      setMaterials((prev) =>
-        prev.map((material) => (material._id === updated._id ? updated : material)),
-      );
-      setSuccess("Raw material updated.");
-      onChange?.();
-    } catch (error) {
-      if (error.status === 401) {
-        onUnauthorized?.();
-        return;
-      }
-      setError(error.message);
+      resetForm();
+    } catch (requestError) {
+      setStatus({ type: "error", message: requestError.message });
     } finally {
-      setBusy(false);
+      setSubmitting(false);
     }
   };
 
   return (
-    <Panel
-      title="Raw Materials"
-      subtitle="Create and update available material stock"
-      right={
-        <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-[#b8c4e0]">
-          {materials.length} total
-        </span>
-      }
-    >
-      <form className="grid gap-3 md:grid-cols-5" onSubmit={createMaterial}>
-        <input
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#6df4c4]"
-          placeholder="Material Name"
-          value={createForm.MaterialName}
-          onChange={(e) =>
-            setCreateForm((prev) => ({ ...prev, MaterialName: e.target.value }))
-          }
-          required
-        />
-        <input
-          type="number"
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#6df4c4]"
-          placeholder="Quantity"
-          value={createForm.Quantity}
-          onChange={(e) =>
-            setCreateForm((prev) => ({ ...prev, Quantity: e.target.value }))
-          }
-          required
-          min="0"
-        />
-        <input
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#6df4c4]"
-          placeholder="ItemsNumber"
-          value={createForm.Unit}
-          onChange={(e) =>
-            setCreateForm((prev) => ({ ...prev, Unit: e.target.value }))
-          }
-          required
-        />
-        <input
-          type="number"
-          step="0.01"
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#6df4c4]"
-          placeholder="Price"
-          value={createForm.UnitPrice}
-          onChange={(e) =>
-            setCreateForm((prev) => ({ ...prev, UnitPrice: e.target.value }))
-          }
-          required
-          min="0"
-        />
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-xl bg-[#f5c45e] px-3 py-2 text-sm font-semibold text-black disabled:opacity-60"
-        >
-          {busy ? "Saving..." : "Create Material"}
-        </button>
-      </form>
+    <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+      <Panel
+        title="Inventory Listings with Search / Filters"
+        subtitle="Filter by stock state, location, and category while keeping product detail pages one click away."
+        right={
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            {numberFormatter.format(filteredMaterials.length)} visible
+          </span>
+        }
+      >
+        <div className="space-y-4">
+          {alerts.length > 0 ? (
+            <StatusMessage
+              status={{
+                type: "warning",
+                message: `${alerts.length} inventory notifications are active. Prioritize the items marked low, critical, or out of stock.`,
+              }}
+            />
+          ) : null}
 
-      <form className="mt-4 grid gap-3 rounded-xl border border-white/10 bg-black/20 p-3 md:grid-cols-6" onSubmit={updateMaterial}>
-        <select
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#f5c45e]"
-          value={updateForm.id}
-          onChange={(e) => {
-            setUpdateForm((prev) => ({ ...prev, id: e.target.value }));
-            populateUpdate(e.target.value);
-          }}
-        >
-          <option value="">Pick material to update</option>
-          {materials.map((material) => (
-            <option key={material._id} value={material._id}>
-              {material.MaterialName}
-            </option>
-          ))}
-        </select>
-        <input
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#f5c45e]"
-          placeholder="Name"
-          value={updateForm.MaterialName}
-          onChange={(e) =>
-            setUpdateForm((prev) => ({ ...prev, MaterialName: e.target.value }))
-          }
-          required
-        />
-        <input
-          type="number"
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#f5c45e]"
-          placeholder="Quantity"
-          value={updateForm.Quantity}
-          onChange={(e) =>
-            setUpdateForm((prev) => ({ ...prev, Quantity: e.target.value }))
-          }
-          required
-          min="0"
-        />
-        <input
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#f5c45e]"
-          placeholder="ItemsNumber"
-          value={updateForm.Unit}
-          onChange={(e) => setUpdateForm((prev) => ({ ...prev, Unit: e.target.value }))}
-          required
-        />
-        <input
-          type="number"
-          step="0.01"
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#f5c45e]"
-          placeholder="Price"
-          value={updateForm.UnitPrice}
-          onChange={(e) =>
-            setUpdateForm((prev) => ({ ...prev, UnitPrice: e.target.value }))
-          }
-          required
-          min="0"
-        />
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-xl border border-[#f5c45e]/40 px-3 py-2 text-sm font-semibold text-[#f5c45e] disabled:opacity-60"
-        >
-          Update
-        </button>
-      </form>
+          <div className="grid gap-3 lg:grid-cols-[1.5fr_repeat(4,minmax(0,1fr))]">
+            <input
+              value={searchValue}
+              onChange={(event) => setSearchValue(event.target.value)}
+              className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+              placeholder="Search by material, SKU, barcode, or RFID"
+            />
+            <FilterSelect
+              value={stateFilter}
+              onChange={(event) => setStateFilter(event.target.value)}
+              options={[
+                { value: "all", label: "All states" },
+                { value: "healthy", label: "Healthy" },
+                { value: "low", label: "Low" },
+                { value: "critical", label: "Critical" },
+                { value: "out", label: "Out of stock" },
+              ]}
+            />
+            <FilterSelect
+              value={categoryFilter}
+              onChange={(event) => setCategoryFilter(event.target.value)}
+              options={[
+                { value: "all", label: "All categories" },
+                ...categories.map((category) => ({
+                  value: category,
+                  label: category,
+                })),
+              ]}
+            />
+            <FilterSelect
+              value={locationFilter}
+              onChange={(event) => setLocationFilter(event.target.value)}
+              options={[
+                { value: "all", label: "All locations" },
+                ...locations.map((location) => ({
+                  value: location,
+                  label: location,
+                })),
+              ]}
+            />
+            <FilterSelect
+              value={sortBy}
+              onChange={(event) => setSortBy(event.target.value)}
+              options={[
+                { value: "name", label: "Sort: Name" },
+                { value: "quantity", label: "Sort: Quantity" },
+                { value: "value", label: "Sort: Value" },
+                { value: "updated", label: "Sort: Updated" },
+              ]}
+            />
+          </div>
 
-      <StatusMessage status={status} />
+          <div className="grid gap-3">
+            {loading && materials.length === 0 ? (
+              <div className="rounded-[26px] border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                Loading inventory listings...
+              </div>
+            ) : filteredMaterials.length === 0 ? (
+              <div className="rounded-[26px] border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                No materials match the active filters.
+              </div>
+            ) : (
+              filteredMaterials.map((material) => {
+                const state = getMaterialState(material);
+                const stateMeta = getMaterialStateMeta(state);
 
-      <div className="mt-4 grid gap-2">
-        {materials.map((material) => (
-          <article
-            key={material._id}
-            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2"
-          >
-            <div>
-              <h3 className="font-medium text-white">{material.MaterialName}</h3>
-              <p className="text-xs text-[#98a5c8]">
-                Qty {material.Quantity} {material.Unit} | ${material.UnitPrice}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => populateUpdate(material._id)}
-              className="rounded-lg border border-white/15 px-3 py-1 text-xs text-[#c9d3ec]"
-            >
-              Edit
-            </button>
-          </article>
-        ))}
+                return (
+                  <article
+                    key={material._id}
+                    className="rounded-[28px] border border-slate-200 bg-slate-50/90 px-4 py-4"
+                  >
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setActiveMaterialId(material._id)}
+                            className="text-left text-lg font-semibold text-slate-900"
+                          >
+                            {material.MaterialName}
+                          </button>
+                          <span
+                            className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${stateMeta.className}`}
+                          >
+                            {stateMeta.label}
+                          </span>
+                        </div>
+                        <p className="text-sm text-slate-500">
+                          {(material.sku || "Unassigned SKU") + " · "}
+                          {(material.category || "General") + " · "}
+                          {(material.location || "Main Warehouse")}
+                        </p>
+                        <div className="flex flex-wrap gap-2 text-xs text-slate-500">
+                          {material.barcode ? (
+                            <TraceTag label="Barcode" value={material.barcode} />
+                          ) : null}
+                          {material.rfidTag ? (
+                            <TraceTag label="RFID" value={material.rfidTag} />
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[420px]">
+                        <StatPill
+                          label="On hand"
+                          value={`${numberFormatter.format(material.Quantity || 0)} ${material.Unit}`}
+                        />
+                        <StatPill
+                          label="Value"
+                          value={currencyFormatter.format(
+                            material.inventoryValue ||
+                              Number(material.Quantity || 0) *
+                                Number(material.UnitPrice || 0),
+                          )}
+                        />
+                        <StatPill
+                          label="Reorder"
+                          value={`${numberFormatter.format(material.reorderPoint || 0)} ${material.Unit}`}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Link
+                        href={`/dashboard/materials/${material._id}`}
+                        className="rounded-2xl bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+                      >
+                        Product detail
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => setActiveMaterialId(material._id)}
+                        className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700"
+                      >
+                        Preview
+                      </button>
+                      {permissions.canManageMaterials ? (
+                        <button
+                          type="button"
+                          onClick={() => startEdit(material)}
+                          className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700"
+                        >
+                          Edit record
+                        </button>
+                      ) : null}
+                    </div>
+                  </article>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </Panel>
+
+      <div className="space-y-5">
+        <Panel
+          title={
+            permissions.canManageMaterials
+              ? editingId
+                ? "Update Material Record"
+                : "Efficient Data Entry"
+              : "Product Preview"
+          }
+          subtitle={
+            permissions.canManageMaterials
+              ? "Maintain SKU, stock policy, barcode, RFID, and supplier details in one form."
+              : "Your role has read-only access to inventory master data."
+          }
+          right={
+            permissions.canManageMaterials && editingId ? (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700"
+              >
+                Clear edit
+              </button>
+            ) : null
+          }
+        >
+          {permissions.canManageMaterials ? (
+            <form className="grid gap-3" onSubmit={submitMaterial}>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field
+                  label="Material name"
+                  value={form.MaterialName}
+                  onChange={updateForm("MaterialName")}
+                  placeholder="Copper wiring"
+                />
+                <Field
+                  label="SKU"
+                  value={form.sku}
+                  onChange={updateForm("sku")}
+                  placeholder="MAT-001"
+                />
+                <Field
+                  label="Category"
+                  value={form.category}
+                  onChange={updateForm("category")}
+                  placeholder="Electrical"
+                />
+                <Field
+                  label="Location"
+                  value={form.location}
+                  onChange={updateForm("location")}
+                  placeholder="Aisle B3"
+                />
+                <Field
+                  label="Quantity"
+                  type="number"
+                  min="0"
+                  value={form.Quantity}
+                  onChange={updateForm("Quantity")}
+                  placeholder="0"
+                />
+                <Field
+                  label="Unit"
+                  value={form.Unit}
+                  onChange={updateForm("Unit")}
+                  placeholder="rolls"
+                />
+                <Field
+                  label="Unit price"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.UnitPrice}
+                  onChange={updateForm("UnitPrice")}
+                  placeholder="0"
+                />
+                <Field
+                  label="Preferred supplier"
+                  as="select"
+                  value={form.preferredSupplierId}
+                  onChange={updateForm("preferredSupplierId")}
+                >
+                  <option value="">No preferred supplier</option>
+                  {suppliers.map((supplier) => (
+                    <option key={supplier._id} value={supplier._id}>
+                      {supplier.SupplierName}
+                    </option>
+                  ))}
+                </Field>
+                <Field
+                  label="Reorder point"
+                  type="number"
+                  min="0"
+                  value={form.reorderPoint}
+                  onChange={updateForm("reorderPoint")}
+                  placeholder="10"
+                />
+                <Field
+                  label="Safety stock"
+                  type="number"
+                  min="0"
+                  value={form.safetyStock}
+                  onChange={updateForm("safetyStock")}
+                  placeholder="5"
+                />
+                <Field
+                  label="Barcode"
+                  value={form.barcode}
+                  onChange={updateForm("barcode")}
+                  placeholder="890123456789"
+                />
+                <Field
+                  label="RFID tag"
+                  value={form.rfidTag}
+                  onChange={updateForm("rfidTag")}
+                  placeholder="RFID-WH-0042"
+                />
+                <Field
+                  label="Status"
+                  as="select"
+                  value={form.status}
+                  onChange={updateForm("status")}
+                >
+                  <option value="active">Active</option>
+                  <option value="quarantined">Quarantined</option>
+                  <option value="discontinued">Discontinued</option>
+                </Field>
+                <Field
+                  label="Last audit date"
+                  type="date"
+                  value={form.lastAuditDate}
+                  onChange={updateForm("lastAuditDate")}
+                />
+              </div>
+
+              <label className="grid gap-2 text-sm font-medium text-slate-700">
+                Description
+                <textarea
+                  rows={4}
+                  value={form.description}
+                  onChange={updateForm("description")}
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                  placeholder="Material notes, quality constraints, or special handling guidance"
+                />
+              </label>
+
+              <StatusMessage status={status} />
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {submitting
+                  ? "Saving material..."
+                  : editingId
+                    ? "Update material"
+                    : "Create material"}
+              </button>
+            </form>
+          ) : (
+            <ReadOnlyMaterialCard material={activeMaterial} />
+          )}
+        </Panel>
+
+        <Panel
+          title="Selected Product Snapshot"
+          subtitle="Quick product detail context before opening the dedicated item page."
+        >
+          <ReadOnlyMaterialCard material={activeMaterial} />
+        </Panel>
       </div>
-    </Panel>
+    </div>
+  );
+}
+
+function FilterSelect({ options, ...props }) {
+  return (
+    <select
+      {...props}
+      className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function Field({ as = "input", children, label, ...props }) {
+  const Component = as;
+
+  return (
+    <label className="grid gap-2 text-sm font-medium text-slate-700">
+      {label}
+      <Component
+        {...props}
+        className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+      >
+        {children}
+      </Component>
+    </label>
+  );
+}
+
+function TraceTag({ label, value }) {
+  return (
+    <span className="rounded-full border border-slate-200 bg-white px-3 py-1">
+      {label}: {value}
+    </span>
+  );
+}
+
+function StatPill({ label, value }) {
+  return (
+    <div className="rounded-[20px] border border-slate-200 bg-white px-3 py-3">
+      <p className="text-xs uppercase tracking-[0.18em] text-slate-400">{label}</p>
+      <p className="mt-2 text-sm font-semibold text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+function ReadOnlyMaterialCard({ material }) {
+  if (!material) {
+    return (
+      <div className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+        Pick a material from the list to inspect its live profile.
+      </div>
+    );
+  }
+
+  const state = getMaterialState(material);
+  const stateMeta = getMaterialStateMeta(state);
+
+  return (
+    <div className="rounded-[28px] border border-slate-200 bg-slate-50/90 px-4 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.24em] text-slate-400">
+            Active product
+          </p>
+          <h3 className="mt-2 text-xl font-semibold text-slate-900">
+            {material.MaterialName}
+          </h3>
+          <p className="mt-2 text-sm text-slate-500">
+            {material.location || "Main Warehouse"} · {material.category || "General"}
+          </p>
+        </div>
+        <span
+          className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${stateMeta.className}`}
+        >
+          {stateMeta.label}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <StatPill
+          label="On hand"
+          value={`${numberFormatter.format(material.Quantity || 0)} ${material.Unit}`}
+        />
+        <StatPill
+          label="Inventory value"
+          value={currencyFormatter.format(
+            material.inventoryValue ||
+              Number(material.Quantity || 0) * Number(material.UnitPrice || 0),
+          )}
+        />
+        <StatPill
+          label="Barcode"
+          value={material.barcode || "Not assigned"}
+        />
+        <StatPill label="RFID" value={material.rfidTag || "Not assigned"} />
+      </div>
+
+      {material.description ? (
+        <p className="mt-4 text-sm leading-6 text-slate-600">
+          {material.description}
+        </p>
+      ) : null}
+    </div>
   );
 }

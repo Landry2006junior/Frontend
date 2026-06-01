@@ -1,121 +1,252 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import Panel from "../ui/Panel";
 import StatusMessage from "../ui/StatusMessage";
-import { apiRequest, withAuth } from "../../lib/api";
+import { useInventoryWorkspace } from "./useInventoryWorkspace";
+import { numberFormatter } from "../../lib/inventory";
+import { useState } from "react";
 
-export default function SuppliersPanel({ token, onUnauthorized, onChange }) {
-  const [suppliers, setSuppliers] = useState([]);
+export default function SuppliersPanel() {
+  const {
+    suppliers,
+    materials,
+    permissions,
+    createSupplier,
+    loading,
+  } = useInventoryWorkspace();
   const [form, setForm] = useState({ SupplierName: "", phoneNumber: "" });
-  const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState({ type: "", message: "" });
 
-  const setError = (message) => setStatus({ type: "error", message });
-  const setSuccess = (message) => setStatus({ type: "success", message });
-
-  const fetchSuppliers = useCallback(async () => {
-    try {
-      const data = await apiRequest(
-        "/suppliers",
-        withAuth(token, { method: "GET" }),
-      );
-      setSuppliers(data);
-    } catch (error) {
-      if (error.status === 401) {
-        onUnauthorized?.();
-        return;
-      }
-      setError(error.message);
-    }
-  }, [onUnauthorized, token]);
-
-  useEffect(() => {
-    if (!token) return;
-    queueMicrotask(() => {
-      void fetchSuppliers();
+  const supplierRows = suppliers.map((supplier) => {
+    const linkedMaterials = materials.filter((material) => {
+      const preferredId =
+        material.preferredSupplierId?._id || material.preferredSupplierId || "";
+      return preferredId === supplier._id;
     });
-  }, [fetchSuppliers, token]);
 
-  const createSupplier = async (event) => {
+    return {
+      ...supplier,
+      linkedMaterials,
+    };
+  });
+
+  const unassignedMaterials = materials.filter((material) => {
+    const preferredId =
+      material.preferredSupplierId?._id || material.preferredSupplierId || "";
+    return !preferredId;
+  });
+
+  const updateForm = (field) => (event) => {
+    setForm((current) => ({ ...current, [field]: event.target.value }));
+  };
+
+  const submitSupplier = async (event) => {
     event.preventDefault();
-    setBusy(true);
+    setSubmitting(true);
     setStatus({ type: "", message: "" });
+
     try {
-      const data = await apiRequest(
-        "/suppliers",
-        withAuth(token, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            SupplierName: form.SupplierName.trim(),
-            phoneNumber: form.phoneNumber.trim(),
-          }),
-        }),
-      );
-      const created = data.supplier || data;
-      setSuppliers((prev) => [created, ...prev]);
+      await createSupplier({
+        SupplierName: form.SupplierName.trim(),
+        phoneNumber: form.phoneNumber.trim(),
+      });
+      setStatus({
+        type: "success",
+        message: "Supplier created and available for inventory assignment.",
+      });
       setForm({ SupplierName: "", phoneNumber: "" });
-      setSuccess("Supplier created.");
-      onChange?.();
-    } catch (error) {
-      if (error.status === 401) {
-        onUnauthorized?.();
-        return;
-      }
-      setError(error.message);
+    } catch (requestError) {
+      setStatus({ type: "error", message: requestError.message });
     } finally {
-      setBusy(false);
+      setSubmitting(false);
     }
   };
 
   return (
-    <Panel title="Suppliers" subtitle="Manage supplier records" right={<span className="rounded-full bg-white/10 px-3 py-1 text-xs text-[#b8c4e0]">{suppliers.length} total</span>}>
-      <form className="grid gap-3 md:grid-cols-3" onSubmit={createSupplier}>
-        <input
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#6df4c4]"
-          placeholder="Supplier Name"
-          value={form.SupplierName}
-          onChange={(e) =>
-            setForm((prev) => ({ ...prev, SupplierName: e.target.value }))
+    <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr]">
+      <Panel
+        title="Supplier Directory"
+        subtitle="Track supplier coverage, partner contact data, and assignment gaps across the inventory base."
+        right={
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            {numberFormatter.format(suppliers.length)} suppliers
+          </span>
+        }
+      >
+        <div className="grid gap-4 sm:grid-cols-3">
+          <StatCard
+            label="Supplier partners"
+            value={numberFormatter.format(suppliers.length)}
+            note="Approved external inventory partners"
+          />
+          <StatCard
+            label="Assigned materials"
+            value={numberFormatter.format(
+              materials.length - unassignedMaterials.length,
+            )}
+            note="Materials with a preferred supplier attached"
+          />
+          <StatCard
+            label="Coverage gaps"
+            value={numberFormatter.format(unassignedMaterials.length)}
+            note="Materials still missing a supplier assignment"
+          />
+        </div>
+
+        <div className="mt-5 space-y-3">
+          {loading && suppliers.length === 0 ? (
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+              Loading supplier directory...
+            </div>
+          ) : supplierRows.length === 0 ? (
+            <EmptyState
+              title="No suppliers configured"
+              description="Create supplier records so inventory items can be linked to approved partners."
+            />
+          ) : (
+            supplierRows.map((supplier) => (
+              <div
+                key={supplier._id}
+                className="rounded-[24px] border border-slate-200 bg-slate-50/90 px-4 py-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-slate-900">
+                      {supplier.SupplierName}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {supplier.phoneNumber}
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {numberFormatter.format(supplier.linkedMaterials.length)} linked
+                  </span>
+                </div>
+
+                {supplier.linkedMaterials.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+                    {supplier.linkedMaterials.slice(0, 4).map((material) => (
+                      <span
+                        key={material._id}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1"
+                      >
+                        {material.MaterialName}
+                      </span>
+                    ))}
+                    {supplier.linkedMaterials.length > 4 ? (
+                      <span className="rounded-full border border-slate-200 bg-white px-3 py-1">
+                        +{supplier.linkedMaterials.length - 4} more
+                      </span>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm text-slate-500">
+                    No preferred materials assigned yet.
+                  </p>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </Panel>
+
+      <div className="space-y-5">
+        <Panel
+          title="Supplier Management"
+          subtitle={
+            permissions.canManageSuppliers
+              ? "Create partner records that can be assigned to material profiles."
+              : "This role can view supplier coverage but not create or edit supplier records."
           }
-          required
-        />
-        <input
-          className="rounded-xl border border-white/15 bg-black/25 px-3 py-2 text-sm text-white outline-none focus:border-[#6df4c4]"
-          placeholder="Phone Number"
-          value={form.phoneNumber}
-          onChange={(e) =>
-            setForm((prev) => ({ ...prev, phoneNumber: e.target.value }))
-          }
-          required
-        />
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-xl bg-[#f5c45e] px-3 py-2 text-sm font-semibold text-black disabled:opacity-60"
         >
-          {busy ? "Saving..." : "Create Supplier"}
-        </button>
-      </form>
-      <StatusMessage status={status} />
-      <div className="mt-4 space-y-2">
-        {suppliers.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-white/20 px-4 py-5 text-sm text-[#98a5c8]">
-            No suppliers yet.
+          {permissions.canManageSuppliers ? (
+            <form className="grid gap-3" onSubmit={submitSupplier}>
+              <label className="grid gap-2 text-sm font-medium text-slate-700">
+                Supplier name
+                <input
+                  value={form.SupplierName}
+                  onChange={updateForm("SupplierName")}
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                  placeholder="Northern Metals"
+                />
+              </label>
+              <label className="grid gap-2 text-sm font-medium text-slate-700">
+                Phone number
+                <input
+                  value={form.phoneNumber}
+                  onChange={updateForm("phoneNumber")}
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                  placeholder="+1 555 010 205"
+                />
+              </label>
+              <StatusMessage status={status} />
+              <button
+                type="submit"
+                disabled={submitting}
+                className="rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {submitting ? "Creating supplier..." : "Create supplier"}
+              </button>
+            </form>
+          ) : (
+            <StatusMessage
+              status={{
+                type: "warning",
+                message:
+                  "Supplier administration is restricted for this role. Ask a manager or administrator to create new suppliers.",
+              }}
+            />
+          )}
+        </Panel>
+
+        <Panel
+          title="Coverage Gaps"
+          subtitle="Materials that still need a preferred supplier assignment."
+        >
+          <div className="space-y-3">
+            {unassignedMaterials.length === 0 ? (
+              <EmptyState
+                title="No coverage gaps"
+                description="Every material currently has a preferred supplier linked."
+              />
+            ) : (
+              unassignedMaterials.slice(0, 8).map((material) => (
+                <div
+                  key={material._id}
+                  className="rounded-[24px] border border-slate-200 bg-slate-50/90 px-4 py-4"
+                >
+                  <p className="font-semibold text-slate-900">
+                    {material.MaterialName}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {material.category || "General"} · {material.location || "Main Warehouse"}
+                  </p>
+                </div>
+              ))
+            )}
           </div>
-        ) : (
-          suppliers.map((supplier) => (
-            <article
-              key={supplier._id}
-              className="rounded-xl border border-white/10 bg-black/20 px-4 py-3"
-            >
-              <h3 className="font-medium text-white">{supplier.SupplierName}</h3>
-              <p className="text-sm text-[#98a5c8]">{supplier.phoneNumber}</p>
-            </article>
-          ))
-        )}
+        </Panel>
       </div>
-    </Panel>
+    </div>
+  );
+}
+
+function StatCard({ label, value, note }) {
+  return (
+    <article className="rounded-[24px] border border-slate-200 bg-slate-50/90 px-4 py-4">
+      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{label}</p>
+      <p className="mt-3 text-2xl font-semibold text-slate-900">{value}</p>
+      <p className="mt-2 text-sm text-slate-500">{note}</p>
+    </article>
+  );
+}
+
+function EmptyState({ title, description }) {
+  return (
+    <div className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+      <p className="font-semibold text-slate-700">{title}</p>
+      <p className="mt-2 leading-6">{description}</p>
+    </div>
   );
 }
