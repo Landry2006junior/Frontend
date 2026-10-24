@@ -13,6 +13,13 @@ import {
   getMaterialStateMeta,
   numberFormatter,
 } from "../../lib/inventory";
+import {
+  hasErrors,
+  validateLettersOnly,
+  validateNumber,
+  validateReferenceCode,
+  validateText,
+} from "../../lib/validation";
 
 const EMPTY_FORM = {
   direction: "in",
@@ -22,6 +29,7 @@ const EMPTY_FORM = {
   supplierId: "",
   quantity: "",
   referenceCode: "",
+  referenceOverride: "",
   notes: "",
 };
 
@@ -36,6 +44,7 @@ export default function StockMovementsPanel() {
     recordMovement,
   } = useInventoryWorkspace();
   const [form, setForm] = useState(EMPTY_FORM);
+  const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState({ type: "", message: "" });
 
@@ -62,6 +71,14 @@ export default function StockMovementsPanel() {
   const updateForm = (field) => (event) => {
     const nextValue = event.target.value;
 
+    setErrors((current) => {
+      const nextErrors = { ...current, [field]: "" };
+      if (field === "scannerInput") {
+        nextErrors.materialId = "";
+      }
+      return nextErrors;
+    });
+
     setForm((current) => {
       if (field === "scannerInput") {
         const nextMatch =
@@ -80,10 +97,45 @@ export default function StockMovementsPanel() {
     });
   };
 
+  const validate = () => {
+    const nextErrors = {
+      materialId: validateText(form.materialId, "Material", { required: true }),
+      supplierId: validateText(form.supplierId, "Supplier", { required: true }),
+      quantity: validateNumber(form.quantity, "Quantity", {
+        positiveOnly: true,
+        required: true,
+      }),
+      referenceCode: validateReferenceCode(form.referenceCode, { required: true }),
+      referenceOverride: validateLettersOnly(
+        form.referenceOverride,
+        "Reference override",
+        { required: true },
+      ),
+      notes: validateLettersOnly(form.notes, "Notes", { required: true }),
+    };
+
+    if (isOutbound && selectedMaterial && !nextErrors.quantity) {
+      const availableQuantity = Number(selectedMaterial.Quantity || 0);
+      if (Number(form.quantity) > availableQuantity) {
+        nextErrors.quantity =
+          "Quantity out cannot exceed the available stock.";
+      }
+    }
+
+    return nextErrors;
+  };
+
   const submitMovement = async (event) => {
     event.preventDefault();
-    setSubmitting(true);
+    const nextErrors = validate();
+    setErrors(nextErrors);
     setStatus({ type: "", message: "" });
+
+    if (hasErrors(nextErrors)) {
+      return;
+    }
+
+    setSubmitting(true);
 
     try {
       const payload = {
@@ -91,6 +143,7 @@ export default function StockMovementsPanel() {
         supplierId: form.supplierId,
         captureMode: form.captureMode,
         referenceCode: form.referenceCode.trim() || form.scannerInput.trim(),
+        referenceOverride: form.referenceOverride.trim(),
         notes: form.notes.trim(),
       };
 
@@ -112,6 +165,7 @@ export default function StockMovementsPanel() {
         ...EMPTY_FORM,
         direction: current.direction,
       }));
+      setErrors({});
     } catch (requestError) {
       setStatus({ type: "error", message: requestError.message });
     } finally {
@@ -146,7 +200,7 @@ export default function StockMovementsPanel() {
           </div>
         }
       >
-        <form className="space-y-4" onSubmit={submitMovement}>
+        <form className="space-y-4" onSubmit={submitMovement} noValidate>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Capture mode" as="select" value={form.captureMode} onChange={updateForm("captureMode")}>
               <option value="manual">Manual entry</option>
@@ -154,32 +208,18 @@ export default function StockMovementsPanel() {
               <option value="rfid">RFID</option>
             </Field>
             <Field
-              label={
-                form.captureMode === "manual"
-                  ? "Reference code"
-                  : "Scan or paste code"
-              }
-              value={
-                form.captureMode === "manual"
-                  ? form.referenceCode
-                  : form.scannerInput
-              }
-              onChange={
-                form.captureMode === "manual"
-                  ? updateForm("referenceCode")
-                  : updateForm("scannerInput")
-              }
-              placeholder={
-                form.captureMode === "manual"
-                  ? "PO-2026-004"
-                  : "Barcode, RFID, or SKU"
-              }
+              label="Reference code"
+              value={form.referenceCode}
+              onChange={updateForm("referenceCode")}
+              error={errors.referenceCode}
+              placeholder="Letters, numbers, and dashes"
             />
             <Field
               label="Material"
               as="select"
               value={form.materialId}
               onChange={updateForm("materialId")}
+              error={errors.materialId}
             >
               <option value="">Select material</option>
               {materials.map((material) => (
@@ -193,6 +233,7 @@ export default function StockMovementsPanel() {
               as="select"
               value={form.supplierId}
               onChange={updateForm("supplierId")}
+              error={errors.supplierId}
             >
               <option value="">Select supplier</option>
               {suppliers.map((supplier) => (
@@ -204,16 +245,17 @@ export default function StockMovementsPanel() {
             <Field
               label="Quantity"
               type="number"
-              min="1"
               value={form.quantity}
               onChange={updateForm("quantity")}
-              placeholder="0"
+              error={errors.quantity}
+              placeholder="Positive number only"
             />
             <Field
               label="Reference override"
-              value={form.referenceCode}
-              onChange={updateForm("referenceCode")}
-              placeholder="Optional transaction reference"
+              value={form.referenceOverride}
+              onChange={updateForm("referenceOverride")}
+              error={errors.referenceOverride}
+              placeholder="Letters only"
             />
           </div>
 
@@ -223,9 +265,18 @@ export default function StockMovementsPanel() {
               rows={4}
               value={form.notes}
               onChange={updateForm("notes")}
-              className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-              placeholder="Receiving notes, issue reason, or verification comments"
+              className={`rounded-2xl border bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition ${
+                errors.notes
+                  ? "border-rose-400 focus:border-rose-400"
+                  : "border-slate-200 focus:border-slate-400"
+              }`}
+              placeholder="Letters only"
             />
+            {errors.notes ? (
+              <span className="text-xs font-normal text-rose-600">
+                {errors.notes}
+              </span>
+            ) : null}
           </label>
 
           {matchedMaterial ? (
@@ -245,11 +296,7 @@ export default function StockMovementsPanel() {
 
           <button
             type="submit"
-            disabled={
-              submitting ||
-              !permissions.canRecordMovements ||
-              Boolean(quantityWarning)
-            }
+            disabled={submitting || !permissions.canRecordMovements}
             className={`rounded-2xl px-4 py-3 text-sm font-semibold text-white disabled:opacity-60 ${
               isOutbound ? "bg-rose-600" : "bg-slate-900"
             }`}
@@ -330,7 +377,7 @@ function DirectionToggle({ active, children, outbound, ...props }) {
   );
 }
 
-function Field({ as = "input", children, label, ...props }) {
+function Field({ as = "input", children, label, error, ...props }) {
   const Component = as;
 
   return (
@@ -338,10 +385,17 @@ function Field({ as = "input", children, label, ...props }) {
       {label}
       <Component
         {...props}
-        className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+        className={`rounded-2xl border bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition ${
+          error
+            ? "border-rose-400 focus:border-rose-400"
+            : "border-slate-200 focus:border-slate-400"
+        }`}
       >
         {children}
       </Component>
+      {error ? (
+        <span className="text-xs font-normal text-rose-600">{error}</span>
+      ) : null}
     </label>
   );
 }

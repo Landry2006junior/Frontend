@@ -4,6 +4,11 @@ import Panel from "../ui/Panel";
 import StatusMessage from "../ui/StatusMessage";
 import { useInventoryWorkspace } from "./useInventoryWorkspace";
 import { numberFormatter } from "../../lib/inventory";
+import {
+  hasErrors,
+  validateDigitsOnly,
+  validateLettersOnly,
+} from "../../lib/validation";
 import { useState } from "react";
 
 export default function SuppliersPanel() {
@@ -15,6 +20,7 @@ export default function SuppliersPanel() {
     loading,
   } = useInventoryWorkspace();
   const [form, setForm] = useState({ SupplierName: "", phoneNumber: "" });
+  const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState({ type: "", message: "" });
 
@@ -39,12 +45,56 @@ export default function SuppliersPanel() {
 
   const updateForm = (field) => (event) => {
     setForm((current) => ({ ...current, [field]: event.target.value }));
+    setErrors((current) => ({ ...current, [field]: "" }));
+  };
+
+  const inputClass = (field) =>
+    `rounded-2xl border bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition ${
+      errors[field]
+        ? "border-rose-400 focus:border-rose-400"
+        : "border-slate-200 focus:border-slate-400"
+    }`;
+
+  const validate = () => {
+    const nextErrors = {};
+    nextErrors.SupplierName = validateLettersOnly(
+      form.SupplierName,
+      "Supplier name",
+      { required: true },
+    );
+    if (!nextErrors.SupplierName) {
+      if (form.SupplierName.trim().length < 2) {
+        nextErrors.SupplierName = "Supplier name must be at least 2 characters.";
+      }
+      if (form.SupplierName.trim().length > 100) {
+        nextErrors.SupplierName =
+          "Supplier name cannot exceed 100 characters.";
+      }
+    }
+
+    nextErrors.phoneNumber = validateDigitsOnly(
+      form.phoneNumber,
+      "Phone number",
+      { required: true },
+    );
+    if (!nextErrors.phoneNumber && form.phoneNumber.trim().length !== 10) {
+      nextErrors.phoneNumber = "Phone number must be exactly 10 digits.";
+    }
+
+    return nextErrors;
   };
 
   const submitSupplier = async (event) => {
     event.preventDefault();
-    setSubmitting(true);
+    const nextErrors = validate();
+    setErrors(nextErrors);
     setStatus({ type: "", message: "" });
+
+    if (hasErrors(nextErrors)) {
+      return;
+    }
+
+    setSubmitting(true);
 
     try {
       await createSupplier({
@@ -56,6 +106,7 @@ export default function SuppliersPanel() {
         message: "Supplier created and available for inventory assignment.",
       });
       setForm({ SupplierName: "", phoneNumber: "" });
+      setErrors({});
     } catch (requestError) {
       setStatus({ type: "error", message: requestError.message });
     } finally {
@@ -161,24 +212,34 @@ export default function SuppliersPanel() {
           }
         >
           {permissions.canManageSuppliers ? (
-            <form className="grid gap-3" onSubmit={submitSupplier}>
+            <form className="grid gap-3" onSubmit={submitSupplier} noValidate>
               <label className="grid gap-2 text-sm font-medium text-slate-700">
                 Supplier name
                 <input
                   value={form.SupplierName}
                   onChange={updateForm("SupplierName")}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-                  placeholder="Northern Metals"
+                  className={inputClass("SupplierName")}
+                  placeholder="Letters only"
                 />
+                {errors.SupplierName ? (
+                  <span className="text-xs font-normal text-rose-600">
+                    {errors.SupplierName}
+                  </span>
+                ) : null}
               </label>
               <label className="grid gap-2 text-sm font-medium text-slate-700">
                 Phone number
                 <input
                   value={form.phoneNumber}
                   onChange={updateForm("phoneNumber")}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-                  placeholder="+1 555 010 205"
+                  className={inputClass("phoneNumber")}
+                  placeholder="10 digits only"
                 />
+                {errors.phoneNumber ? (
+                  <span className="text-xs font-normal text-rose-600">
+                    {errors.phoneNumber}
+                  </span>
+                ) : null}
               </label>
               <StatusMessage status={status} />
               <button

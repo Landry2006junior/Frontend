@@ -53,9 +53,14 @@ export default function LoginPage() {
           </div>
 
           <div className="mt-6 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
-            <Link className="underline underline-offset-4" href="/register">
-              Need an account? Register
-            </Link>
+            <div className="flex flex-wrap gap-4">
+              <Link className="underline underline-offset-4" href="/register">
+                Need an account? Register
+              </Link>
+              <Link className="underline underline-offset-4" href="/forgot-password">
+                Forgot password?
+              </Link>
+            </div>
             <Link className="underline underline-offset-4" href="/">
               Back to overview
             </Link>

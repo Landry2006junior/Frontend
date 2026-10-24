@@ -34,15 +34,15 @@ export const ROLE_CONFIG = {
   },
 };
 
-export const currencyFormatter = new Intl.NumberFormat("en-US", {
+export const currencyFormatter = new Intl.NumberFormat("en-RW", {
   style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 2,
+  currency: "RWF",
+  maximumFractionDigits: 0,
 });
 
-export const wholeCurrencyFormatter = new Intl.NumberFormat("en-US", {
+export const wholeCurrencyFormatter = new Intl.NumberFormat("en-RW", {
   style: "currency",
-  currency: "USD",
+  currency: "RWF",
   maximumFractionDigits: 0,
 });
 

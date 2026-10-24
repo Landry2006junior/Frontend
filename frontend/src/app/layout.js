@@ -12,9 +12,9 @@ const fraunces = Fraunces({
 });
 
 export const metadata = {
-  title: "Arc Inventory Command Center",
+  title: "Arc Inventory",
   description:
-    "Role-aware inventory command center with traceability, movement capture, alerts, and analytics.",
+    "Arc Inventory - Smart warehouse management system with traceability, movement tracking, alerts, and analytics.",
 };
 
 export default function RootLayout({ children }) {

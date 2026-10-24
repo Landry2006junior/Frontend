@@ -13,15 +13,24 @@ import {
   normalizeMaterialPayload,
   numberFormatter,
 } from "../../lib/inventory";
+import {
+  hasErrors,
+  validateBarcode,
+  validateLettersOnly,
+  validateNumber,
+  validateRFID,
+  validateSKU,
+  validateTodayDate,
+} from "../../lib/validation";
 
 const EMPTY_FORM = {
   MaterialName: "",
   sku: "",
   category: "General",
   location: "Main Warehouse",
-  Quantity: "0",
-  Unit: "units",
-  UnitPrice: "0",
+  Quantity: "",
+  Unit: "",
+  UnitPrice: "",
   reorderPoint: "10",
   safetyStock: "5",
   barcode: "",
@@ -49,8 +58,10 @@ export default function RawMaterialsPanel() {
   const [editingId, setEditingId] = useState("");
   const [activeMaterialId, setActiveMaterialId] = useState("");
   const [form, setForm] = useState(EMPTY_FORM);
+  const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState({ type: "", message: "" });
+  const [skuSequence, setSkuSequence] = useState(1);
 
   const categories = Array.from(
     new Set(materials.map((material) => material.category || "General")),
@@ -115,16 +126,26 @@ export default function RawMaterialsPanel() {
 
   const updateForm = (field) => (event) => {
     setForm((current) => ({ ...current, [field]: event.target.value }));
+    setErrors((current) => ({ ...current, [field]: "" }));
+  };
+
+  const generateSku = () => {
+    const nextSku = `MAT-${String(skuSequence).padStart(3, "0")}`;
+    setSkuSequence((prev) => prev + 1);
+    setForm((current) => ({ ...current, sku: nextSku }));
+    setErrors((current) => ({ ...current, sku: "" }));
   };
 
   const resetForm = () => {
     setForm(EMPTY_FORM);
     setEditingId("");
+    setErrors({});
   };
 
   const startEdit = (material) => {
     setEditingId(material._id);
     setActiveMaterialId(material._id);
+    setErrors({});
     setForm({
       MaterialName: material.MaterialName || "",
       sku: material.sku || "",
@@ -147,10 +168,110 @@ export default function RawMaterialsPanel() {
     });
   };
 
+  const validate = () => {
+    const nextErrors = {};
+
+    nextErrors.MaterialName = validateLettersOnly(
+      form.MaterialName,
+      "Material name",
+      { required: true },
+    );
+    if (!nextErrors.MaterialName) {
+      if (form.MaterialName.trim().length < 2) {
+        nextErrors.MaterialName =
+          "Material name must be at least 2 characters.";
+      }
+      if (form.MaterialName.trim().length > 100) {
+        nextErrors.MaterialName =
+          "Material name cannot exceed 100 characters.";
+      }
+    }
+
+    nextErrors.sku = validateSKU(form.sku, { required: true });
+
+    nextErrors.category = validateLettersOnly(form.category, "Category", {
+      required: true,
+    });
+    if (!nextErrors.category) {
+      if (form.category.trim().length < 2) {
+        nextErrors.category = "Category must be at least 2 characters.";
+      }
+      if (form.category.trim().length > 100) {
+        nextErrors.category = "Category cannot exceed 100 characters.";
+      }
+    }
+
+    nextErrors.location = validateLettersOnly(form.location, "Location", {
+      required: true,
+    });
+    if (!nextErrors.location) {
+      if (form.location.trim().length < 2) {
+        nextErrors.location = "Location must be at least 2 characters.";
+      }
+      if (form.location.trim().length > 100) {
+        nextErrors.location = "Location cannot exceed 100 characters.";
+      }
+    }
+
+    nextErrors.Quantity = validateNumber(form.Quantity, "Quantity", {
+      positiveOnly: true,
+      required: true,
+    });
+
+    nextErrors.Unit = validateNumber(form.Unit, "Units", {
+      positiveOnly: true,
+      required: true,
+    });
+
+    nextErrors.UnitPrice = validateNumber(form.UnitPrice, "Unit price", {
+      positiveOnly: true,
+      required: true,
+    });
+
+    nextErrors.reorderPoint = validateNumber(form.reorderPoint, "Reorder point", {
+      min: 0,
+      required: true,
+    });
+    if (!nextErrors.reorderPoint && Number(form.reorderPoint) < 0) {
+      nextErrors.reorderPoint = "Reorder point cannot be negative.";
+    }
+
+    nextErrors.safetyStock = validateNumber(form.safetyStock, "Safety stock", {
+      min: 0,
+      required: true,
+    });
+    if (!nextErrors.safetyStock && Number(form.safetyStock) < 0) {
+      nextErrors.safetyStock = "Safety stock cannot be negative.";
+    }
+
+    nextErrors.barcode = validateBarcode(form.barcode, { required: true });
+    nextErrors.rfidTag = validateRFID(form.rfidTag, { required: true });
+
+    nextErrors.lastAuditDate = validateTodayDate(form.lastAuditDate, {
+      required: true,
+    });
+
+    nextErrors.description = validateLettersOnly(form.description, "Description", {
+      required: true,
+    });
+    if (!nextErrors.description && form.description.trim().length > 500) {
+      nextErrors.description = "Description cannot exceed 500 characters.";
+    }
+
+    return nextErrors;
+  };
+
   const submitMaterial = async (event) => {
     event.preventDefault();
-    setSubmitting(true);
+    const nextErrors = validate();
+    setErrors(nextErrors);
     setStatus({ type: "", message: "" });
+
+    if (hasErrors(nextErrors)) {
+      return;
+    }
+
+    setSubmitting(true);
 
     try {
       await saveMaterial(normalizeMaterialPayload(form), editingId);
@@ -370,54 +491,79 @@ export default function RawMaterialsPanel() {
           }
         >
           {permissions.canManageMaterials ? (
-            <form className="grid gap-3" onSubmit={submitMaterial}>
+            <form className="grid gap-3" onSubmit={submitMaterial} noValidate>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field
                   label="Material name"
                   value={form.MaterialName}
                   onChange={updateForm("MaterialName")}
-                  placeholder="Copper wiring"
+                  error={errors.MaterialName}
+                  placeholder="Letters only"
                 />
-                <Field
-                  label="SKU"
-                  value={form.sku}
-                  onChange={updateForm("sku")}
-                  placeholder="MAT-001"
-                />
+                <div className="grid gap-2 text-sm font-medium text-slate-700">
+                  <div className="flex items-center justify-between">
+                    <span>SKU</span>
+                    <button
+                      type="button"
+                      onClick={generateSku}
+                      className="text-xs font-medium text-blue-700 underline underline-offset-4"
+                    >
+                      Auto increment
+                    </button>
+                  </div>
+                  <input
+                    value={form.sku}
+                    onChange={updateForm("sku")}
+                    className={`rounded-2xl border bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition ${
+                      errors.sku
+                        ? "border-rose-400 focus:border-rose-400"
+                        : "border-slate-200 focus:border-slate-400"
+                    }`}
+                    placeholder="MAT-001"
+                  />
+                  {errors.sku ? (
+                    <span className="text-xs font-normal text-rose-600">
+                      {errors.sku}
+                    </span>
+                  ) : null}
+                </div>
                 <Field
                   label="Category"
                   value={form.category}
                   onChange={updateForm("category")}
-                  placeholder="Electrical"
+                  error={errors.category}
+                  placeholder="Letters only"
                 />
                 <Field
                   label="Location"
                   value={form.location}
                   onChange={updateForm("location")}
-                  placeholder="Aisle B3"
+                  error={errors.location}
+                  placeholder="Letters only"
                 />
                 <Field
                   label="Quantity"
                   type="number"
-                  min="0"
                   value={form.Quantity}
                   onChange={updateForm("Quantity")}
-                  placeholder="0"
+                  error={errors.Quantity}
+                  placeholder="Positive number only"
                 />
                 <Field
-                  label="Unit"
+                  label="Units"
+                  type="number"
                   value={form.Unit}
                   onChange={updateForm("Unit")}
-                  placeholder="rolls"
+                  error={errors.Unit}
+                  placeholder="Positive numbers only"
                 />
                 <Field
                   label="Unit price"
                   type="number"
-                  min="0"
-                  step="0.01"
                   value={form.UnitPrice}
                   onChange={updateForm("UnitPrice")}
-                  placeholder="0"
+                  error={errors.UnitPrice}
+                  placeholder="Positive number only"
                 />
                 <Field
                   label="Preferred supplier"
@@ -435,30 +581,32 @@ export default function RawMaterialsPanel() {
                 <Field
                   label="Reorder point"
                   type="number"
-                  min="0"
                   value={form.reorderPoint}
                   onChange={updateForm("reorderPoint")}
+                  error={errors.reorderPoint}
                   placeholder="10"
                 />
                 <Field
                   label="Safety stock"
                   type="number"
-                  min="0"
                   value={form.safetyStock}
                   onChange={updateForm("safetyStock")}
+                  error={errors.safetyStock}
                   placeholder="5"
                 />
                 <Field
                   label="Barcode"
                   value={form.barcode}
                   onChange={updateForm("barcode")}
-                  placeholder="890123456789"
+                  error={errors.barcode}
+                  placeholder="Numbers only"
                 />
                 <Field
                   label="RFID tag"
                   value={form.rfidTag}
                   onChange={updateForm("rfidTag")}
-                  placeholder="RFID-WH-0042"
+                  error={errors.rfidTag}
+                  placeholder="Letters, numbers, and dashes"
                 />
                 <Field
                   label="Status"
@@ -475,6 +623,7 @@ export default function RawMaterialsPanel() {
                   type="date"
                   value={form.lastAuditDate}
                   onChange={updateForm("lastAuditDate")}
+                  error={errors.lastAuditDate}
                 />
               </div>
 
@@ -484,9 +633,18 @@ export default function RawMaterialsPanel() {
                   rows={4}
                   value={form.description}
                   onChange={updateForm("description")}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
-                  placeholder="Material notes, quality constraints, or special handling guidance"
+                  className={`rounded-2xl border bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition ${
+                    errors.description
+                      ? "border-rose-400 focus:border-rose-400"
+                      : "border-slate-200 focus:border-slate-400"
+                  }`}
+                  placeholder="Letters only"
                 />
+                {errors.description ? (
+                  <span className="text-xs font-normal text-rose-600">
+                    {errors.description}
+                  </span>
+                ) : null}
               </label>
 
               <StatusMessage status={status} />
@@ -534,7 +692,7 @@ function FilterSelect({ options, ...props }) {
   );
 }
 
-function Field({ as = "input", children, label, ...props }) {
+function Field({ as = "input", children, label, error, ...props }) {
   const Component = as;
 
   return (
@@ -542,10 +700,17 @@ function Field({ as = "input", children, label, ...props }) {
       {label}
       <Component
         {...props}
-        className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+        className={`rounded-2xl border bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition ${
+          error
+            ? "border-rose-400 focus:border-rose-400"
+            : "border-slate-200 focus:border-slate-400"
+        }`}
       >
         {children}
       </Component>
+      {error ? (
+        <span className="text-xs font-normal text-rose-600">{error}</span>
+      ) : null}
     </label>
   );
 }

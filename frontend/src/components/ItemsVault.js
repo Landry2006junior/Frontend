@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { apiRequest } from "../lib/api";
 import { clearAuth, getStoredAuth } from "../lib/auth";
+import { hasErrors, validateLettersOnly } from "../lib/validation";
 
 export default function ItemsVault({ onLogout }) {
   const [auth, setAuth] = useState({ token: "", user: null });
@@ -10,6 +11,7 @@ export default function ItemsVault({ onLogout }) {
   const [status, setStatus] = useState({ type: "", message: "" });
   const [busy, setBusy] = useState(false);
   const [itemForm, setItemForm] = useState({ title: "", description: "" });
+  const [errors, setErrors] = useState({});
 
   const authHeaders = useMemo(() => {
     if (!auth.token) return {};
@@ -25,24 +27,47 @@ export default function ItemsVault({ onLogout }) {
 
   const updateItemForm = (field) => (event) => {
     setItemForm((prev) => ({ ...prev, [field]: event.target.value }));
+    setErrors((prev) => ({ ...prev, [field]: "" }));
+  };
+
+  const validateItem = () => {
+    const nextErrors = {};
+    nextErrors.title = validateLettersOnly(itemForm.title, "Title", {
+      required: true,
+    });
+    if (!nextErrors.title) {
+      if (itemForm.title.trim().length < 2) {
+        nextErrors.title = "Title must be at least 2 characters.";
+      }
+      if (itemForm.title.trim().length > 100) {
+        nextErrors.title = "Title cannot exceed 100 characters.";
+      }
+    }
+
+    nextErrors.description = validateLettersOnly(
+      itemForm.description,
+      "Description",
+      { required: true },
+    );
+    if (!nextErrors.description && itemForm.description.trim().length > 500) {
+      nextErrors.description = "Description cannot exceed 500 characters.";
+    }
+
+    return nextErrors;
   };
 
   const fetchItems = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/items`, {
+      const data = await apiRequest("/items", {
         headers: { ...authHeaders },
       });
-      const data = await response.json();
-      if (response.status === 401) {
+      setItems(data);
+    } catch (error) {
+      if (error.status === 401) {
         clearAuth();
         onLogout?.();
         return;
       }
-      if (!response.ok) {
-        throw new Error(data.message || "Unable to load items.");
-      }
-      setItems(data);
-    } catch (error) {
       setError(error.message);
     }
   }, [authHeaders, onLogout]);
@@ -56,10 +81,17 @@ export default function ItemsVault({ onLogout }) {
 
   const createItem = async (event) => {
     event.preventDefault();
+    const nextErrors = validateItem();
+    setErrors(nextErrors);
     setStatus({ type: "", message: "" });
+
+    if (hasErrors(nextErrors)) {
+      return;
+    }
+
     setBusy(true);
     try {
-      const response = await fetch(`${API_BASE}/items`, {
+      const data = await apiRequest("/items", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -70,19 +102,16 @@ export default function ItemsVault({ onLogout }) {
           description: itemForm.description.trim(),
         }),
       });
-      const data = await response.json();
-      if (response.status === 401) {
+      setItems((prev) => [data, ...prev]);
+      setItemForm({ title: "", description: "" });
+      setErrors({});
+      setSuccess("Item created.");
+    } catch (error) {
+      if (error.status === 401) {
         clearAuth();
         onLogout?.();
         return;
       }
-      if (!response.ok) {
-        throw new Error(data.message || "Unable to create item.");
-      }
-      setItems((prev) => [data, ...prev]);
-      setItemForm({ title: "", description: "" });
-      setSuccess("Item created.");
-    } catch (error) {
       setError(error.message);
     } finally {
       setBusy(false);
@@ -93,22 +122,18 @@ export default function ItemsVault({ onLogout }) {
     setStatus({ type: "", message: "" });
     setBusy(true);
     try {
-      const response = await fetch(`${API_BASE}/items/${id}`, {
+      await apiRequest(`/items/${id}`, {
         method: "DELETE",
         headers: { ...authHeaders },
       });
-      const data = await response.json();
-      if (response.status === 401) {
+      setItems((prev) => prev.filter((item) => item._id !== id));
+      setSuccess("Item removed.");
+    } catch (error) {
+      if (error.status === 401) {
         clearAuth();
         onLogout?.();
         return;
       }
-      if (!response.ok) {
-        throw new Error(data.message || "Unable to delete item.");
-      }
-      setItems((prev) => prev.filter((item) => item._id !== id));
-      setSuccess("Item removed.");
-    } catch (error) {
       setError(error.message);
     } finally {
       setBusy(false);
@@ -149,27 +174,43 @@ export default function ItemsVault({ onLogout }) {
         </span>
       </div>
 
-      <form className="grid gap-4" onSubmit={createItem}>
+      <form className="grid gap-4" onSubmit={createItem} noValidate>
         <label className="flex flex-col gap-2 text-sm text-[#b7c3df]">
           Title
           <input
             value={itemForm.title}
             onChange={updateItemForm("title")}
-            required
-            className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-[#f6c453]"
-            placeholder="Shadow brief"
+            className={`rounded-2xl border bg-black/30 px-4 py-3 text-white outline-none transition ${
+              errors.title
+                ? "border-rose-400 focus:border-rose-400"
+                : "border-white/10 focus:border-[#f6c453]"
+            }`}
+            placeholder="Letters only"
           />
+          {errors.title ? (
+            <span className="text-xs font-normal text-rose-300">
+              {errors.title}
+            </span>
+          ) : null}
         </label>
         <label className="flex flex-col gap-2 text-sm text-[#b7c3df]">
           Description
           <textarea
             value={itemForm.description}
             onChange={updateItemForm("description")}
-            required
             rows={3}
-            className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none transition focus:border-[#f6c453]"
-            placeholder="Describe why this entry matters..."
+            className={`rounded-2xl border bg-black/30 px-4 py-3 text-white outline-none transition ${
+              errors.description
+                ? "border-rose-400 focus:border-rose-400"
+                : "border-white/10 focus:border-[#f6c453]"
+            }`}
+            placeholder="Letters only"
           />
+          {errors.description ? (
+            <span className="text-xs font-normal text-rose-300">
+              {errors.description}
+            </span>
+          ) : null}
         </label>
         <button
           type="submit"

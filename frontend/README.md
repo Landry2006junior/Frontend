@@ -2,7 +2,33 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
-First, run the development server:
+## Run locally
+
+Start MongoDB, then run the API and frontend in separate terminals:
+
+```bash
+# Terminal 1: API
+cd C:\landry\backend
+npm install
+npm start
+
+# Terminal 2: frontend
+cd C:\landry\frontend\frontend
+npm install
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). If that port is occupied,
+Next.js will choose another available port; local development CORS permits
+localhost origins. The API defaults to `http://localhost:5000/api`.
+
+The backend connects to `mongodb://localhost:27017/reactsec` by default and
+creates the database collections on startup. Set `MONGODB_URI` to use a
+different MongoDB database, `FRONTEND_ORIGINS` to a comma-separated list of
+deployed frontend origins, or `NEXT_PUBLIC_API_BASE` to point the frontend at a
+different API URL.
+
+For development, run the frontend with:
 
 ```bash
 npm run dev
@@ -13,8 +39,6 @@ pnpm dev
 # or
 bun dev
 ```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
 You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
 

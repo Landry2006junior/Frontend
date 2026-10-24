@@ -42,9 +42,11 @@ export default function ProtectedPageShell({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [auth, setAuth] = useState(() => getStoredAuth());
+  const [auth, setAuth] = useState({ token: "", user: null });
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const session = getStoredAuth();
     setAuth(session);
 
@@ -62,7 +64,7 @@ export default function ProtectedPageShell({
     router.push("/login");
   };
 
-  if (!auth.token) {
+  if (!mounted || !auth.token) {
     return (
       <div className="min-h-screen px-4 py-6 md:px-8">
         <div className="mx-auto max-w-5xl rounded-[30px] border border-slate-200 bg-white/90 p-8 text-sm text-slate-500 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.28)]">
@@ -174,7 +176,7 @@ export default function ProtectedPageShell({
               />
               <MiniMetric
                 label="Workspace date"
-                value={dateFormatter.format(new Date())}
+                value={mounted ? dateFormatter.format(new Date()) : "--"}
                 tone="text-white"
               />
             </div>
